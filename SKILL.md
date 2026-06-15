@@ -1,9 +1,123 @@
 ---
 name: wp-post
-description: WordPress 文章发布工具，用于上传 HTML 文章内容到 WordPress 站点。触发条件：(1) 用户请求发布文章、上传文章到网站、写文章到WordPress (2) 用户提到文章插图、配图、需要上传图片 (3) 用户要求生成文章摘要。功能：媒体文件上传、文章创建发布、HTML 内容插入图片。
+description: WordPress 文章发布工具，用于上传 HTML 文章内容到 WordPress 站点。触发条件：(1) 用户请求发布文章、上传文章到网站、写文章到WordPress (2) 用户提到文章插图、配图、需要上传图片 (3) 用户要求生成文章摘要。功能：媒体文件上传、文章创建发布、HTML 内容插入图片。所有凭据（用户名、应用密码、站点域名）必须从环境变量读取，禁止在对话/prompt 中明文出现。
 ---
 
 # WP-Post
+
+## 安全约束（最高优先级）
+
+**所有 WordPress 凭据必须从环境变量读取，禁止让模型读取、记录或询问用户输入。**
+
+### 必需的环境变量
+
+| 变量名 | 含义 | 示例 |
+|--------|------|------|
+| `WP_API_USERNAME` | WordPress 用户名（应用密码所属账号） | （不在文档中写出实际值） |
+| `WP_APP_PASSWORD` | WordPress 应用密码（Application Password） | （不在文档中写出实际值） |
+| `WP_SITE_DOMAIN` | 站点域名（不含协议头） | `www.example.com` |
+
+### 硬性规则
+
+1. **禁止**在 prompt、对话、JSON 文件、命令历史中明文出现 `WP_APP_PASSWORD` 的值。
+2. **禁止**询问用户「你的应用密码是什么」「你的用户名是什么」「你的站点域名是啥」。
+3. **禁止**把凭据写进 `post-data.json` 或任何中间文件。
+4. **禁止**用 `-u "user:pass"` 的形式拼出明文凭据；必须通过 shell 自身的环境变量展开机制读取。
+5. 如果任一环境变量未设置 → **立即报错退出**，**只允许**提醒用户去 shell 里 export 对应变量名，**不要**回退到询问用户、不要读取或回显变量值。
+6. 错误提示中只能写「环境变量 XXX 未设置」，**不能**透露变量的值；提醒用户时也**只能说变量名**。
+
+### 跨平台 shell 说明
+
+mavis 在 macOS / Linux 下默认使用 zsh / bash（POSIX 风格），在 Windows 下默认使用 **PowerShell**。**两边的环境变量语法不同**，必须按平台选择对应写法：
+
+| 平台 | 默认 shell | 环境变量访问 | 设置方式 |
+|------|-----------|-------------|---------|
+| macOS / Linux | zsh / bash | `${VAR}` 或 `$VAR` | `export VAR=value` |
+| Windows (PowerShell) | powershell | `$env:VAR` | `$env:VAR = "value"` |
+| Windows (Git Bash / WSL) | bash | `${VAR}` 或 `$VAR` | `export VAR=value` |
+| Windows (cmd，**不推荐**) | cmd | `%VAR%` | `set VAR=value` |
+
+> **mavis 在 Windows 上跑命令时默认走 PowerShell**，所以 Windows 用户应当用 `$env:VAR` 而不是 `${VAR}`。下面的 curl 模板分两种写法给出。
+
+### 在 curl 中读取环境变量
+
+#### macOS / Linux / Git Bash / WSL（bash 风格）
+
+```bash
+# 媒体上传
+curl -u "${WP_API_USERNAME}:${WP_APP_PASSWORD}" \
+  -X POST -H "Content-Type: image/webp" \
+  -H "Content-Disposition: attachment; filename=\"文件名.webp\"" \
+  --data-binary @/path/to/image.webp \
+  "https://${WP_SITE_DOMAIN}/wp-json/wp/v2/media"
+
+# 文章上传
+curl -u "${WP_API_USERNAME}:${WP_APP_PASSWORD}" \
+  -X POST -H "Content-Type: application/json" \
+  --data-binary @/path/to/post-data.json \
+  "https://${WP_SITE_DOMAIN}/wp-json/wp/v2/posts"
+
+# 删除文章
+curl -u "${WP_API_USERNAME}:${WP_APP_PASSWORD}" \
+  -X DELETE \
+  "https://${WP_SITE_DOMAIN}/wp-json/wp/v2/posts/文章ID"
+```
+
+#### Windows PowerShell
+
+```powershell
+# 媒体上传
+curl -u "$($env:WP_API_USERNAME):$($env:WP_APP_PASSWORD)" `
+  -X POST -H "Content-Type: image/webp" `
+  -H "Content-Disposition: attachment; filename=`"文件名.webp`"" `
+  --data-binary @C:/path/to/image.webp `
+  "https://$env:WP_SITE_DOMAIN/wp-json/wp/v2/media"
+
+# 文章上传
+curl -u "$($env:WP_API_USERNAME):$($env:WP_APP_PASSWORD)" `
+  -X POST -H "Content-Type: application/json" `
+  --data-binary @C:/path/to/post-data.json `
+  "https://$env:WP_SITE_DOMAIN/wp-json/wp/v2/posts"
+
+# 删除文章
+curl -u "$($env:WP_API_USERNAME):$($env:WP_APP_PASSWORD)" `
+  -X DELETE `
+  "https://$env:WP_SITE_DOMAIN/wp-json/wp/v2/posts/文章ID"
+```
+
+> PowerShell 里 `$env:VAR` 在双引号字符串中可以直接插值，但**用于 `-u` 这种位置时仍要用 `"$($env:VAR):$($env:VAR)"` 子表达式**包起来，否则 `-u` 接收到的会是字面量 `$env:VAR`。PowerShell 的反引号 ``` ` ``` 是续行符（不是 bash 的反斜杠 `\`）。
+
+### 启动时自检
+
+执行任何 wp-post 工作流之前，先按当前平台跑对应的自检。
+
+#### macOS / Linux / Git Bash / WSL
+
+```bash
+: "${WP_API_USERNAME:?WP_API_USERNAME 未设置}"
+: "${WP_APP_PASSWORD:?WP_APP_PASSWORD 未设置}"
+: "${WP_SITE_DOMAIN:?WP_SITE_DOMAIN 未设置}"
+```
+
+#### Windows PowerShell
+
+```powershell
+if (-not $env:WP_API_USERNAME) { throw "WP_API_USERNAME 未设置" }
+if (-not $env:WP_APP_PASSWORD) { throw "WP_APP_PASSWORD 未设置" }
+if (-not $env:WP_SITE_DOMAIN) { throw "WP_SITE_DOMAIN 未设置" }
+```
+
+任意一行失败就停止，**不要**回退到询问用户，也不要读取/记录/显示变量的值。
+
+**此时唯一允许的动作是提醒用户去 shell 里 export 对应的变量**，比如向用户输出：
+
+> 「wp-post 需要的环境变量还没设好，请在终端里 export 一下：
+> `WP_API_USERNAME`、`WP_APP_PASSWORD`、`WP_SITE_DOMAIN`
+> 设好后再让我继续。」
+
+提醒时**只说变量名**，不要说「把你刚才那个密码给我」「你的用户名是啥」，更不要把 shell 里读到的值回显到对话里。
+
+---
 
 ## 快速开始
 
@@ -12,11 +126,11 @@ description: WordPress 文章发布工具，用于上传 HTML 文章内容到 Wo
 ### 1. 上传媒体（文章插图）
 
 ```bash
-curl -u "[api-username]:[app-password]" \
+curl -u "${WP_API_USERNAME}:${WP_APP_PASSWORD}" \
   -X POST -H "Content-Type: image/webp" \
   -H "Content-Disposition: attachment; filename=\"文件名.webp\"" \
   --data-binary @/path/to/image.webp \
-  "https://[域名]/wp-json/wp/v2/media"
+  "https://${WP_SITE_DOMAIN}/wp-json/wp/v2/media"
 ```
 
 - **返回数据**包含 `id`（媒体ID）、`source_url`（图片URL）等字段
@@ -42,10 +156,10 @@ curl -u "[api-username]:[app-password]" \
 **Step 2.2: 上传文章**
 
 ```bash
-curl -u "[api-username]:[app-password]" \
+curl -u "${WP_API_USERNAME}:${WP_APP_PASSWORD}" \
   -X POST -H "Content-Type: application/json" \
   --data-binary @/path/to/post-data.json \
-  "https://[域名]/wp-json/wp/v2/posts"
+  "https://${WP_SITE_DOMAIN}/wp-json/wp/v2/posts"
 ```
 
 **注意**：
@@ -54,6 +168,10 @@ curl -u "[api-username]:[app-password]" \
 - 避免使用 `-d` 参数直接传 JSON，使用 `--data-binary @文件路径` 方式
 
 ## 工作流程
+
+### Step 0: 凭据自检（每次会话开始时执行一次）
+
+执行上面的「启动时自检」代码段。任何一个变量缺失就停止，不要往下走。
 
 ### Step 1: 上传所有插图
 
@@ -74,7 +192,7 @@ curl -u "[api-username]:[app-password]" \
 
 ### Step 4: 文章草稿
 
-1. 组装 JSON 请求体
+1. 组装 JSON 请求体（**不包含任何凭据**）
 2. 调用文章上传 API
 3. 返回草稿结果（文章 ID 和链接）
 
@@ -83,21 +201,44 @@ curl -u "[api-username]:[app-password]" \
 1. 发布后检查是否出现重复（同一标题出现多篇）
 2. 如果发现重复，保留 ID 较小的那篇，删除 ID 较大的那篇
 3. 删除命令：
+
 ```bash
-curl -u "[api-username]:[app-password]" \
+curl -u "${WP_API_USERNAME}:${WP_APP_PASSWORD}" \
   -X DELETE \
-  "https://[域名]/wp-json/wp/v2/posts/文章ID"
+  "https://${WP_SITE_DOMAIN}/wp-json/wp/v2/posts/文章ID"
 ```
 
 ## API 端点
 
 | 操作 | 端点 | Content-Type |
 |------|------|--------------|
-| 媒体上传 | `https://www.manluenpack.com/wp-json/wp/v2/media` | `image/*` |
-| 文章上传 | `https://www.manluenpack.com/wp-json/wp/v2/posts` | `application/json` |
+| 媒体上传 | `https://${WP_SITE_DOMAIN}/wp-json/wp/v2/media` | `image/*` |
+| 文章上传 | `https://${WP_SITE_DOMAIN}/wp-json/wp/v2/posts` | `application/json` |
+| 删除文章 | `https://${WP_SITE_DOMAIN}/wp-json/wp/v2/posts/{id}` | （DELETE） |
 
 ## 认证信息
-位于AGENT配置文件中
+
+**必须通过环境变量提供**：`WP_API_USERNAME`、`WP_APP_PASSWORD`、`WP_SITE_DOMAIN`。
+
+设置示例（用户在本地 shell 执行，不要贴到对话里）：
+
+#### macOS / Linux / Git Bash / WSL
+
+```bash
+export WP_API_USERNAME="..."
+export WP_APP_PASSWORD="..."
+export WP_SITE_DOMAIN="www.example.com"
+```
+
+#### Windows PowerShell
+
+```powershell
+$env:WP_API_USERNAME = "..."
+$env:WP_APP_PASSWORD = "..."
+$env:WP_SITE_DOMAIN = "www.example.com"
+```
+
+> PowerShell 的 `$env:VAR = "value"` 只对**当前会话**生效；想持久化用 `[Environment]::SetEnvironmentVariable("WP_API_USERNAME", "...", "User")`。
 
 ## HTML 内容格式要求
 
